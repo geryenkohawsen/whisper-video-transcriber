@@ -82,9 +82,16 @@ def diarize(audio_path: str, num_speakers: Optional[int] = None) -> List[dict]:
 
     diarization = pipeline(audio_path, **kwargs)
 
-    # community-1 returns DiarizeOutput; access .speaker_diarization for iteration.
-    # Fallback to direct iteration for older pyannote Annotation objects.
-    iterable = getattr(diarization, "speaker_diarization", diarization)
+    # community-1 returns DiarizeOutput with two attributes:
+    #   .exclusive_speaker_diarization — no overlapping segments; best for aligning
+    #     with Whisper timestamps (recommended by pyannote docs).
+    #   .speaker_diarization — allows overlapping speakers.
+    # Fall back to direct iteration for older pyannote Annotation objects (3.1).
+    iterable = (
+        getattr(diarization, "exclusive_speaker_diarization", None)
+        or getattr(diarization, "speaker_diarization", None)
+        or diarization
+    )
 
     segments = []
     for turn, speaker in iterable:

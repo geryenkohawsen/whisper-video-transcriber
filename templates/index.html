@@ -140,7 +140,7 @@
         <option value="pt">Portuguese</option>
         <option value="ru">Russian</option>
         <option value="zh">Chinese</option>
-        <option value="ja">Japanese</option>
+        <option value="ja" selected>Japanese</option>
         <option value="ko">Korean</option>
         <option value="ar">Arabic</option>
         <option value="hi">Hindi</option>
@@ -152,7 +152,7 @@
 
     <div class="row">
       <label class="toggle">
-        <input type="checkbox" id="diarize" {% if not diarization_available %}disabled{% endif %} />
+        <input type="checkbox" id="diarize" {% if diarization_available %}checked{% endif %} {% if not diarization_available %}disabled{% endif %} />
         Speaker diarization
       </label>
       <label for="num_speakers">Speakers (blank = auto):</label>
