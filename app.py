@@ -4,11 +4,18 @@ import queue
 import tempfile
 import threading
 import time
+import warnings
 
 from dotenv import load_dotenv
 
 # Load .env before importing modules that read env vars (e.g. HF_TOKEN in diarizer).
 load_dotenv()
+
+# Silent / very short clips trigger benign numpy stats warnings inside whisper VAD
+# and pyannote embeddings ("Mean of empty slice", "invalid value encountered in divide").
+# Suppress to keep server log readable; clip output is empty either way.
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
 
 from flask import Flask, Response, jsonify, render_template, request
 

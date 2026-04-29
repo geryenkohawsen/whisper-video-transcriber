@@ -262,6 +262,7 @@
 
       <button id="submit" class="single-only" disabled>Transcribe</button>
       <button id="bulk-submit" class="bulk-only" disabled>Transcribe all</button>
+      <button id="bulk-abort" class="secondary bulk-only" disabled>Abort</button>
       <button id="bulk-download" class="secondary bulk-only" disabled>Download .zip</button>
     </div>
 
@@ -665,12 +666,15 @@ const bulkFileInput = document.getElementById('bulk-file');
 const bulkList = document.getElementById('bulk-list');
 const bulkTbody = document.getElementById('bulk-tbody');
 const bulkSubmit = document.getElementById('bulk-submit');
+const bulkAbort = document.getElementById('bulk-abort');
 const bulkDownload = document.getElementById('bulk-download');
 const bulkFormat = document.getElementById('bulk-format');
 const bulkSummary = document.getElementById('bulk-summary');
 
 let bulkQueue = [];   // [{id, file, status, result, error}]
 let bulkRunning = false;
+let bulkAbortRequested = false;
+let bulkActiveController = null;  // AbortController for in-flight fetch
 
 modeSingle.addEventListener('click', () => setMode('single'));
 modeBulk.addEventListener('click', () => setMode('bulk'));
@@ -718,6 +722,8 @@ function renderBulkList() {
   }
   bulkList.style.display = 'block';
   bulkSubmit.disabled = bulkRunning || bulkQueue.every(q => q.status !== 'queued');
+  bulkAbort.disabled = !bulkRunning;
+  // Download enabled whenever at least one file finished — works mid-flight too.
   bulkDownload.disabled = !bulkQueue.some(q => q.status === 'done');
 
   bulkTbody.innerHTML = '';
@@ -749,50 +755,92 @@ function statusLabel(item) {
     return `✓ done${speakers ? ` (${speakers} speakers)` : ''}`;
   }
   if (item.status === 'error') return `✗ ${item.error || 'error'}`;
+  if (item.status === 'aborted') return '⊘ aborted';
   return item.status;
 }
 
 bulkSubmit.addEventListener('click', async () => {
   if (bulkRunning) return;
   bulkRunning = true;
+  bulkAbortRequested = false;
   bulkSummary.classList.remove('show');
   progressEl.classList.add('show');
   progressList.innerHTML = '';
   status.className = 'status';
+  renderBulkList();  // refresh button states (abort enabled, download checks)
 
   const total = bulkQueue.filter(q => q.status === 'queued').length;
-  let done = 0, failed = 0;
+  let done = 0, failed = 0, aborted = 0;
 
-  for (const item of bulkQueue) {
-    if (item.status !== 'queued') continue;
-    item.status = 'processing';
-    renderBulkList();
-    status.innerHTML = `<span class="spinner"></span>Processing ${++done}/${total}: ${escapeHtml(item.file.name)}`;
-    logEvent('bulk', `Starting ${item.file.name}`, 'active');
+  try {
+    for (const item of bulkQueue) {
+      if (item.status !== 'queued') continue;
+      if (bulkAbortRequested) {
+        item.status = 'aborted';
+        aborted++;
+        continue;
+      }
+      item.status = 'processing';
+      renderBulkList();
+      status.innerHTML = `<span class="spinner"></span>Processing ${++done}/${total}: ${escapeHtml(item.file.name)}`;
+      logEvent('bulk', `Starting ${item.file.name}`, 'active');
 
-    try {
-      const res = await transcribeOne(item.file);
-      item.result = res;
-      item.status = 'done';
-      logEvent('bulk', `Done: ${item.file.name}`, 'ok');
-    } catch (e) {
-      item.error = e.message;
-      item.status = 'error';
-      failed++;
-      logEvent('bulk', `Failed ${item.file.name}: ${e.message}`, 'err');
+      try {
+        bulkActiveController = new AbortController();
+        const res = await transcribeOne(item.file, bulkActiveController.signal);
+        item.result = res;
+        item.status = 'done';
+        logEvent('bulk', `Done: ${item.file.name}`, 'ok');
+      } catch (e) {
+        if (e.name === 'AbortError' || bulkAbortRequested) {
+          item.status = 'aborted';
+          item.error = 'aborted by user';
+          aborted++;
+          logEvent('bulk', `Aborted: ${item.file.name}`, 'warn');
+        } else {
+          item.error = e.message;
+          item.status = 'error';
+          failed++;
+          logEvent('bulk', `Failed ${item.file.name}: ${e.message}`, 'err');
+        }
+      } finally {
+        bulkActiveController = null;
+      }
+      renderBulkList();
     }
+  } finally {
+    bulkRunning = false;
+    bulkAbortRequested = false;
+    bulkActiveController = null;
     renderBulkList();
   }
 
-  bulkRunning = false;
-  status.textContent = `Bulk complete. ${total - failed}/${total} succeeded.`;
-  bulkSummary.textContent = `${total - failed}/${total} files transcribed. Click "Download .zip" to save all.`;
+  const succeeded = total - failed - aborted;
+  if (aborted) {
+    status.textContent = `Aborted. ${succeeded}/${total} succeeded, ${aborted} skipped, ${failed} failed.`;
+  } else {
+    status.textContent = `Bulk complete. ${succeeded}/${total} succeeded.`;
+  }
+  const partsDone = bulkQueue.filter(q => q.status === 'done').length;
+  bulkSummary.textContent = partsDone
+    ? `${partsDone} file(s) ready. Click "Download .zip" to save (partial downloads supported).`
+    : 'No files completed. Nothing to download.';
   bulkSummary.classList.add('show');
-  renderBulkList();
+});
+
+bulkAbort.addEventListener('click', () => {
+  if (!bulkRunning) return;
+  bulkAbortRequested = true;
+  bulkAbort.disabled = true;
+  status.innerHTML = '<span class="spinner"></span>Aborting…';
+  if (bulkActiveController) {
+    try { bulkActiveController.abort(); } catch {}
+  }
 });
 
 // Run /transcribe and resolve when result event arrives. Reuses existing endpoint.
-async function transcribeOne(file) {
+// `signal` (optional AbortSignal) lets caller cancel the in-flight request.
+async function transcribeOne(file, signal) {
   const formData = new FormData();
   formData.append('video', file);
   formData.append('model', model.value);
@@ -800,7 +848,7 @@ async function transcribeOne(file) {
   formData.append('diarize', diarize.checked ? 'true' : 'false');
   if (numSpeakers.value) formData.append('num_speakers', numSpeakers.value);
 
-  const res = await fetch('/transcribe', { method: 'POST', body: formData });
+  const res = await fetch('/transcribe', { method: 'POST', body: formData, signal });
   if (!res.ok && res.headers.get('content-type')?.includes('application/json')) {
     const err = await res.json();
     throw new Error(err.error || `HTTP ${res.status}`);
