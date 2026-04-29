@@ -15,6 +15,7 @@
     --accent-hover: #3b78ee;
     --error: #ff6b6b;
     --warn: #f0b96b;
+    --ok: #6bd394;
   }
   * { box-sizing: border-box; }
   body {
@@ -51,6 +52,13 @@
   .drop .hint { color: var(--muted); font-size: 13px; }
   input[type=file] { display: none; }
   .filename { margin-top: 12px; color: var(--muted); font-size: 13px; word-break: break-all; }
+
+  .preview { display: none; margin-top: 16px; align-items: center; gap: 16px; }
+  .preview.show { display: flex; }
+  .preview img { width: 200px; max-height: 120px; border-radius: 6px; border: 1px solid var(--border); object-fit: cover; }
+  .preview-info { font-size: 13px; color: var(--muted); flex: 1; min-width: 0; }
+  .preview-info .name { color: var(--text); word-break: break-all; }
+
   .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
   label { font-size: 13px; color: var(--muted); }
   select, input[type=number] {
@@ -70,9 +78,23 @@
   button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
   button.secondary:hover:not(:disabled) { background: var(--border); }
   button.secondary.active { background: var(--accent); border-color: var(--accent); }
-  .status { margin-top: 16px; font-size: 14px; color: var(--muted); }
+
+  .progress { display: none; margin-top: 16px; }
+  .progress.show { display: block; }
+  .progress-list {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    max-height: 220px; overflow-y: auto;
+  }
+  .progress-list .ev { color: var(--muted); margin: 4px 0; line-height: 1.5; }
+  .progress-list .ev.active { color: var(--accent); }
+  .progress-list .ev.ok { color: var(--ok); }
+  .progress-list .ev.warn { color: var(--warn); }
+  .progress-list .ev.err { color: var(--error); }
+  .progress-list .ev .stage { display: inline-block; min-width: 110px; opacity: .7; }
+
+  .status { margin-top: 12px; font-size: 14px; color: var(--muted); }
   .status.error { color: var(--error); }
-  .status.warn { color: var(--warn); }
   .spinner {
     display: inline-block; width: 14px; height: 14px;
     border: 2px solid var(--muted); border-top-color: transparent;
@@ -80,11 +102,13 @@
     vertical-align: -2px; margin-right: 8px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
   .result { display: none; }
   .result.show { display: block; }
   .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px; }
   .result-header h2 { margin: 0; font-size: 18px; }
   .meta { color: var(--muted); font-size: 13px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
   pre {
     background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
@@ -120,6 +144,14 @@
       <div id="filename" class="filename"></div>
     </div>
     <input type="file" id="file" accept="video/*,audio/*" />
+
+    <div id="preview" class="preview">
+      <img id="thumb" alt="preview" />
+      <div class="preview-info">
+        <div id="preview-name" class="name"></div>
+        <div id="preview-meta"></div>
+      </div>
+    </div>
 
     <div class="row">
       <label for="model">Model:</label>
@@ -163,24 +195,28 @@
     {% if not diarization_available %}
     <div class="warn-banner">
       Diarization disabled. Set <code>HF_TOKEN</code> env var and accept terms at
-      <code>huggingface.co/pyannote/speaker-diarization-3.1</code> to enable speaker labels.
+      <code>huggingface.co/pyannote/speaker-diarization-community-1</code> to enable speaker labels.
     </div>
     {% endif %}
 
-    <div id="status" class="status"></div>
+    <div id="progress" class="progress">
+      <div id="status" class="status"></div>
+      <div id="progress-list" class="progress-list"></div>
+    </div>
   </div>
 
   <div id="result" class="panel result">
     <div class="result-header">
       <h2>Transcript <span id="meta" class="meta"></span></h2>
-      <div>
+      <div class="actions">
         <button id="copy" class="secondary">Copy</button>
-        <button id="download" class="secondary">Download .txt</button>
+        <button id="download-txt" class="secondary">Download .txt</button>
+        <button id="download-md" class="secondary">Download .md</button>
       </div>
     </div>
 
     <div class="tabs">
-      <button class="secondary active" data-tab="plain">Plain</button>
+      <button class="secondary" data-tab="plain">Plain</button>
       <button class="secondary" data-tab="timestamped">Timestamped</button>
       <button class="secondary" data-tab="dialogue">Dialogue</button>
     </div>
@@ -196,6 +232,8 @@ const fileInput = document.getElementById('file');
 const filename = document.getElementById('filename');
 const submit = document.getElementById('submit');
 const status = document.getElementById('status');
+const progressEl = document.getElementById('progress');
+const progressList = document.getElementById('progress-list');
 const result = document.getElementById('result');
 const textEl = document.getElementById('text');
 const metaEl = document.getElementById('meta');
@@ -204,6 +242,10 @@ const model = document.getElementById('model');
 const diarize = document.getElementById('diarize');
 const numSpeakers = document.getElementById('num_speakers');
 const diarWarning = document.getElementById('diar-warning');
+const preview = document.getElementById('preview');
+const thumb = document.getElementById('thumb');
+const previewName = document.getElementById('preview-name');
+const previewMeta = document.getElementById('preview-meta');
 
 let selectedFile = null;
 let lastResult = null;
@@ -235,14 +277,87 @@ function setFile(file) {
   submit.disabled = false;
   status.textContent = '';
   status.className = 'status';
+  progressList.innerHTML = '';
+  progressEl.classList.remove('show');
+  generateThumbnail(file);
+}
+
+// Generate thumbnail from video using HTML5 <video> + canvas. Audio files get placeholder.
+function generateThumbnail(file) {
+  preview.classList.remove('show');
+  previewName.textContent = file.name;
+  previewMeta.textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB · ${file.type || 'unknown type'}`;
+
+  if (!file.type.startsWith('video/')) {
+    thumb.src = audioPlaceholder();
+    preview.classList.add('show');
+    return;
+  }
+
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.muted = true;
+  video.src = url;
+
+  video.addEventListener('loadedmetadata', () => {
+    // Seek to 1 second (or 10% of duration if shorter).
+    video.currentTime = Math.min(1, video.duration * 0.1);
+    const dur = formatDuration(video.duration);
+    previewMeta.textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB · ${dur} · ${video.videoWidth}×${video.videoHeight}`;
+  });
+  video.addEventListener('seeked', () => {
+    const canvas = document.createElement('canvas');
+    const w = 320;
+    const h = (video.videoHeight / video.videoWidth) * w;
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    thumb.src = canvas.toDataURL('image/jpeg', 0.85);
+    preview.classList.add('show');
+    URL.revokeObjectURL(url);
+  });
+  video.addEventListener('error', () => {
+    thumb.src = audioPlaceholder();
+    preview.classList.add('show');
+    URL.revokeObjectURL(url);
+  });
+}
+
+function audioPlaceholder() {
+  // Inline SVG placeholder for audio files.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120"><rect width="200" height="120" fill="#0f1115"/><g stroke="#4f8cff" stroke-width="3" stroke-linecap="round"><line x1="40" y1="60" x2="40" y2="60"/><line x1="60" y1="40" x2="60" y2="80"/><line x1="80" y1="25" x2="80" y2="95"/><line x1="100" y1="35" x2="100" y2="85"/><line x1="120" y1="50" x2="120" y2="70"/><line x1="140" y1="30" x2="140" y2="90"/><line x1="160" y1="45" x2="160" y2="75"/></g></svg>`;
+  return 'data:image/svg+xml;base64,' + btoa(svg);
+}
+
+function formatDuration(secs) {
+  if (!isFinite(secs)) return '?:??';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function logEvent(stage, message, level) {
+  const div = document.createElement('div');
+  div.className = `ev ${level || ''}`;
+  div.innerHTML = `<span class="stage">[${stage}]</span> ${escapeHtml(message)}`;
+  progressList.appendChild(div);
+  progressList.scrollTop = progressList.scrollHeight;
+  return div;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 submit.addEventListener('click', async () => {
   if (!selectedFile) return;
   submit.disabled = true;
   result.classList.remove('show');
+  progressEl.classList.add('show');
+  progressList.innerHTML = '';
   status.className = 'status';
-  status.innerHTML = '<span class="spinner"></span>Transcribing — large-v3 on M4 ≈ realtime; diarization adds ~30% time.';
+  status.innerHTML = '<span class="spinner"></span>Uploading...';
 
   const formData = new FormData();
   formData.append('video', selectedFile);
@@ -253,37 +368,91 @@ submit.addEventListener('click', async () => {
 
   try {
     const res = await fetch('/transcribe', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-    lastResult = data;
-    metaEl.textContent = `· ${data.model} · ${data.backend} · lang=${data.language || '?'} · ${data.segments.length} segments`;
-
-    if (data.diarization_warning) {
-      diarWarning.textContent = data.diarization_warning;
-      diarWarning.style.display = 'block';
-    } else {
-      diarWarning.style.display = 'none';
+    if (!res.ok && res.headers.get('content-type')?.includes('application/json')) {
+      const err = await res.json();
+      throw new Error(err.error || `HTTP ${res.status}`);
     }
+    if (!res.body) throw new Error('No response body');
 
-    if (!data.diarization_used && diarize.checked) {
-      activeTab = 'plain';
-    }
-    renderTab();
-    result.classList.add('show');
-    status.textContent = 'Done.';
+    status.innerHTML = '<span class="spinner"></span>Processing...';
+    await readStream(res.body);
+
   } catch (err) {
     status.textContent = `Error: ${err.message}`;
     status.className = 'status error';
+    logEvent('error', err.message, 'err');
   } finally {
     submit.disabled = false;
   }
 });
 
+async function readStream(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let activeStage = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let data;
+      try { data = JSON.parse(line); } catch { continue; }
+
+      if (data.event === 'progress') {
+        if (activeStage) activeStage.classList.remove('active');
+        let level = '';
+        if (data.stage === 'diar_failed' || data.stage === 'diar_skipped') level = 'warn';
+        if (data.stage === 'transcribed' || data.stage === 'diarized') level = 'ok';
+        activeStage = logEvent(data.stage, data.message, level || 'active');
+      } else if (data.event === 'result') {
+        if (activeStage) activeStage.classList.remove('active');
+        logEvent('done', 'All processing finished.', 'ok');
+        handleResult(data);
+        status.textContent = 'Done.';
+      } else if (data.event === 'error') {
+        if (activeStage) activeStage.classList.remove('active');
+        logEvent('error', data.error, 'err');
+        status.textContent = `Error: ${data.error}`;
+        status.className = 'status error';
+      }
+    }
+  }
+}
+
+function handleResult(data) {
+  lastResult = data;
+  metaEl.textContent = `· ${data.model} · ${data.backend} · lang=${data.language || '?'} · ${data.segments.length} segments`;
+
+  if (data.diarization_warning) {
+    diarWarning.textContent = data.diarization_warning;
+    diarWarning.style.display = 'block';
+  } else {
+    diarWarning.style.display = 'none';
+  }
+
+  // Default tab: dialogue if diarization succeeded, else plain.
+  activeTab = data.diarization_used ? 'dialogue' : 'plain';
+  syncTabButtons();
+  renderTab();
+  result.classList.add('show');
+}
+
+function syncTabButtons() {
+  document.querySelectorAll('.tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === activeTab);
+  });
+}
+
 document.querySelectorAll('.tabs button').forEach(btn => {
   btn.addEventListener('click', () => {
     activeTab = btn.dataset.tab;
-    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b === btn));
+    syncTabButtons();
     renderTab();
   });
 });
@@ -300,15 +469,28 @@ function renderTab() {
 document.getElementById('copy').addEventListener('click', () => {
   navigator.clipboard.writeText(textEl.textContent);
 });
-document.getElementById('download').addEventListener('click', () => {
-  const blob = new Blob([textEl.textContent], { type: 'text/plain' });
+
+document.getElementById('download-txt').addEventListener('click', () => downloadFile('txt'));
+document.getElementById('download-md').addEventListener('click', () => downloadFile('md'));
+
+function downloadFile(ext) {
+  if (!lastResult) return;
+  const key = ext === 'md' ? `${activeTab}_md` : activeTab;
+  const content = lastResult[key];
+  if (!content) {
+    alert(`No content for ${activeTab} (${ext}).`);
+    return;
+  }
+  const mime = ext === 'md' ? 'text/markdown' : 'text/plain';
+  const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = (selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript') + `.${activeTab}.txt`;
+  const base = (selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript');
+  a.download = `${base}.${activeTab}.${ext}`;
   a.click();
   URL.revokeObjectURL(url);
-});
+}
 </script>
 </body>
 </html>
