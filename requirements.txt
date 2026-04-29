@@ -1,0 +1,15 @@
+flask
+
+# Apple Silicon native backend (preferred on M-series).
+# Falls back to openai-whisper if MLX unavailable.
+mlx-whisper ; sys_platform == "darwin" and platform_machine == "arm64"
+
+# Reference / fallback backend.
+openai-whisper
+
+# Speaker diarization (optional but required for dialogue output).
+# Needs HF_TOKEN + accepting model terms at:
+#   https://huggingface.co/pyannote/speaker-diarization-3.1
+pyannote.audio>=3.1
+torch>=2.2
+torchaudio>=2.2

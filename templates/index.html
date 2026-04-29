@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Video Transcriber</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --muted: #8b93a7;
+    --accent: #4f8cff;
+    --accent-hover: #3b78ee;
+    --error: #ff6b6b;
+    --warn: #f0b96b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 40px 20px;
+  }
+  .container { width: 100%; max-width: 880px; }
+  h1 { margin: 0 0 8px; font-size: 28px; }
+  .sub { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+  .sub code { background: #0f1115; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .drop {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop.drag { border-color: var(--accent); background: rgba(79,140,255,.08); }
+  .drop p { margin: 8px 0; }
+  .drop .hint { color: var(--muted); font-size: 13px; }
+  input[type=file] { display: none; }
+  .filename { margin-top: 12px; color: var(--muted); font-size: 13px; word-break: break-all; }
+  .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  label { font-size: 13px; color: var(--muted); }
+  select, input[type=number] {
+    background: #0f1115; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px;
+  }
+  input[type=number] { width: 70px; }
+  .toggle { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .toggle input { accent-color: var(--accent); }
+  button {
+    background: var(--accent); color: white; border: none; border-radius: 6px;
+    padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: background .15s;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.secondary:hover:not(:disabled) { background: var(--border); }
+  button.secondary.active { background: var(--accent); border-color: var(--accent); }
+  .status { margin-top: 16px; font-size: 14px; color: var(--muted); }
+  .status.error { color: var(--error); }
+  .status.warn { color: var(--warn); }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid var(--muted); border-top-color: transparent;
+    border-radius: 50%; animation: spin .8s linear infinite;
+    vertical-align: -2px; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .result { display: none; }
+  .result.show { display: block; }
+  .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px; }
+  .result-header h2 { margin: 0; font-size: 18px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  pre {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin: 0; max-height: 600px; overflow-y: auto;
+    white-space: pre-wrap; word-wrap: break-word; font-size: 14px; line-height: 1.6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: #0f1115; border: 1px solid var(--border); font-size: 11px;
+    color: var(--muted); margin-left: 6px;
+  }
+  .warn-banner {
+    background: rgba(240,185,107,.08); border: 1px solid rgba(240,185,107,.3);
+    border-radius: 6px; padding: 10px 12px; font-size: 13px; color: var(--warn);
+    margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Video Transcriber</h1>
+  <div class="sub">
+    Backend: <code>{{ backend }}</code>
+    {% if backend == "mlx" %}<span class="badge">Apple Silicon GPU</span>{% else %}<span class="badge">CPU</span>{% endif %}
+    · Diarization: <code>{{ "available" if diarization_available else "off" }}</code>
+  </div>
+
+  <div class="panel">
+    <div id="drop" class="drop">
+      <p><strong>Click to select</strong> or drag a video here</p>
+      <p class="hint">MP4, MOV, MKV, WebM, MP3, WAV, M4A, FLAC, etc.</p>
+      <div id="filename" class="filename"></div>
+    </div>
+    <input type="file" id="file" accept="video/*,audio/*" />
+
+    <div class="row">
+      <label for="model">Model:</label>
+      <select id="model">
+        {% for m in models %}
+        <option value="{{ m }}" {% if m == default_model %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="language">Language:</label>
+      <select id="language">
+        <option value="auto">Auto-detect</option>
+        <option value="en">English</option>
+        <option value="es">Spanish</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="it">Italian</option>
+        <option value="pt">Portuguese</option>
+        <option value="ru">Russian</option>
+        <option value="zh">Chinese</option>
+        <option value="ja">Japanese</option>
+        <option value="ko">Korean</option>
+        <option value="ar">Arabic</option>
+        <option value="hi">Hindi</option>
+        <option value="nl">Dutch</option>
+        <option value="pl">Polish</option>
+        <option value="tr">Turkish</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label class="toggle">
+        <input type="checkbox" id="diarize" {% if not diarization_available %}disabled{% endif %} />
+        Speaker diarization
+      </label>
+      <label for="num_speakers">Speakers (blank = auto):</label>
+      <input type="number" id="num_speakers" min="1" max="20" placeholder="auto" />
+      <button id="submit" disabled>Transcribe</button>
+    </div>
+
+    {% if not diarization_available %}
+    <div class="warn-banner">
+      Diarization disabled. Set <code>HF_TOKEN</code> env var and accept terms at
+      <code>huggingface.co/pyannote/speaker-diarization-3.1</code> to enable speaker labels.
+    </div>
+    {% endif %}
+
+    <div id="status" class="status"></div>
+  </div>
+
+  <div id="result" class="panel result">
+    <div class="result-header">
+      <h2>Transcript <span id="meta" class="meta"></span></h2>
+      <div>
+        <button id="copy" class="secondary">Copy</button>
+        <button id="download" class="secondary">Download .txt</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="secondary active" data-tab="plain">Plain</button>
+      <button class="secondary" data-tab="timestamped">Timestamped</button>
+      <button class="secondary" data-tab="dialogue">Dialogue</button>
+    </div>
+
+    <pre id="text"></pre>
+    <div id="diar-warning" class="warn-banner" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const filename = document.getElementById('filename');
+const submit = document.getElementById('submit');
+const status = document.getElementById('status');
+const result = document.getElementById('result');
+const textEl = document.getElementById('text');
+const metaEl = document.getElementById('meta');
+const language = document.getElementById('language');
+const model = document.getElementById('model');
+const diarize = document.getElementById('diarize');
+const numSpeakers = document.getElementById('num_speakers');
+const diarWarning = document.getElementById('diar-warning');
+
+let selectedFile = null;
+let lastResult = null;
+let activeTab = 'plain';
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => setFile(e.target.files[0]));
+
+['dragenter', 'dragover'].forEach(ev => {
+  drop.addEventListener(ev, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    drop.classList.add('drag');
+  });
+});
+['dragleave', 'drop'].forEach(ev => {
+  drop.addEventListener(ev, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    drop.classList.remove('drag');
+  });
+});
+drop.addEventListener('drop', (e) => {
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+
+function setFile(file) {
+  if (!file) return;
+  selectedFile = file;
+  filename.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+  submit.disabled = false;
+  status.textContent = '';
+  status.className = 'status';
+}
+
+submit.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  submit.disabled = true;
+  result.classList.remove('show');
+  status.className = 'status';
+  status.innerHTML = '<span class="spinner"></span>Transcribing — large-v3 on M4 ≈ realtime; diarization adds ~30% time.';
+
+  const formData = new FormData();
+  formData.append('video', selectedFile);
+  formData.append('model', model.value);
+  formData.append('language', language.value);
+  formData.append('diarize', diarize.checked ? 'true' : 'false');
+  if (numSpeakers.value) formData.append('num_speakers', numSpeakers.value);
+
+  try {
+    const res = await fetch('/transcribe', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    lastResult = data;
+    metaEl.textContent = `· ${data.model} · ${data.backend} · lang=${data.language || '?'} · ${data.segments.length} segments`;
+
+    if (data.diarization_warning) {
+      diarWarning.textContent = data.diarization_warning;
+      diarWarning.style.display = 'block';
+    } else {
+      diarWarning.style.display = 'none';
+    }
+
+    if (!data.diarization_used && diarize.checked) {
+      activeTab = 'plain';
+    }
+    renderTab();
+    result.classList.add('show');
+    status.textContent = 'Done.';
+  } catch (err) {
+    status.textContent = `Error: ${err.message}`;
+    status.className = 'status error';
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.querySelectorAll('.tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b === btn));
+    renderTab();
+  });
+});
+
+function renderTab() {
+  if (!lastResult) return;
+  if (activeTab === 'dialogue' && !lastResult.dialogue) {
+    textEl.textContent = '(Dialogue format requires speaker diarization. Enable the toggle and re-run.)';
+    return;
+  }
+  textEl.textContent = lastResult[activeTab] || '(empty)';
+}
+
+document.getElementById('copy').addEventListener('click', () => {
+  navigator.clipboard.writeText(textEl.textContent);
+});
+document.getElementById('download').addEventListener('click', () => {
+  const blob = new Blob([textEl.textContent], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript') + `.${activeTab}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
