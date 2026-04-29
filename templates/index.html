@@ -126,6 +126,49 @@
     border-radius: 6px; padding: 10px 12px; font-size: 13px; color: var(--warn);
     margin-top: 12px;
   }
+  .rename-panel {
+    display: none; margin-bottom: 12px; padding: 12px;
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
+  }
+  .rename-panel.show { display: block; }
+  .rename-panel .title { font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .5px; }
+  .rename-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .rename-row { display: flex; align-items: center; gap: 8px; }
+  .rename-row label { min-width: 80px; font-size: 13px; color: var(--muted); }
+  .rename-row input {
+    flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px;
+  }
+
+  /* Mode switcher */
+  .mode-switch { display: inline-flex; gap: 4px; padding: 4px; background: #0f1115; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; }
+  .mode-switch button { background: transparent; color: var(--muted); padding: 6px 14px; font-size: 13px; font-weight: 500; }
+  .mode-switch button.active { background: var(--accent); color: white; }
+  .mode-switch button:hover:not(.active) { color: var(--text); }
+
+  /* Bulk panel */
+  .bulk-only { display: none; }
+  body.bulk-mode .single-only { display: none; }
+  body.bulk-mode .bulk-only { display: block; }
+
+  .bulk-list { margin-top: 16px; max-height: 360px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: #0f1115; }
+  .bulk-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .bulk-list th, .bulk-list td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .bulk-list th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; position: sticky; top: 0; background: #0f1115; }
+  .bulk-list tr:last-child td { border-bottom: none; }
+  .bulk-list .name { word-break: break-all; }
+  .bulk-list .size { color: var(--muted); white-space: nowrap; }
+  .bulk-list .status { white-space: nowrap; }
+  .bulk-list .status.queued { color: var(--muted); }
+  .bulk-list .status.processing { color: var(--accent); }
+  .bulk-list .status.done { color: var(--ok); }
+  .bulk-list .status.error { color: var(--error); }
+  .bulk-list .remove-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 4px 8px; font-size: 16px; }
+  .bulk-list .remove-btn:hover { color: var(--error); }
+  .bulk-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  .bulk-summary { margin-top: 12px; padding: 12px; background: rgba(107,211,148,.08); border: 1px solid rgba(107,211,148,.3); border-radius: 8px; font-size: 13px; color: var(--ok); display: none; }
+  .bulk-summary.show { display: block; }
 </style>
 </head>
 <body>
@@ -137,20 +180,38 @@
     · Diarization: <code>{{ "available" if diarization_available else "off" }}</code>
   </div>
 
+  <div class="mode-switch" role="tablist">
+    <button id="mode-single" class="active" data-mode="single">Single</button>
+    <button id="mode-bulk" data-mode="bulk">Bulk</button>
+  </div>
+
   <div class="panel">
-    <div id="drop" class="drop">
+    <div id="drop" class="drop single-only">
       <p><strong>Click to select</strong> or drag a video here</p>
       <p class="hint">MP4, MOV, MKV, WebM, MP3, WAV, M4A, FLAC, etc.</p>
       <div id="filename" class="filename"></div>
     </div>
     <input type="file" id="file" accept="video/*,audio/*" />
 
-    <div id="preview" class="preview">
+    <div id="bulk-drop" class="drop bulk-only">
+      <p><strong>Click to select</strong> or drag multiple videos here</p>
+      <p class="hint">Files process one at a time. ZIP download when all complete.</p>
+    </div>
+    <input type="file" id="bulk-file" accept="video/*,audio/*" multiple />
+
+    <div id="preview" class="preview single-only">
       <img id="thumb" alt="preview" />
       <div class="preview-info">
         <div id="preview-name" class="name"></div>
         <div id="preview-meta"></div>
       </div>
+    </div>
+
+    <div id="bulk-list" class="bulk-list bulk-only" style="display:none">
+      <table>
+        <thead><tr><th>#</th><th>File</th><th>Size</th><th>Status</th><th></th></tr></thead>
+        <tbody id="bulk-tbody"></tbody>
+      </table>
     </div>
 
     <div class="row">
@@ -189,7 +250,19 @@
       </label>
       <label for="num_speakers">Speakers (blank = auto):</label>
       <input type="number" id="num_speakers" min="1" max="20" placeholder="auto" />
-      <button id="submit" disabled>Transcribe</button>
+
+      <span class="bulk-only" style="display:inline-flex; gap:8px; align-items:center;">
+        <label for="bulk-format">ZIP format:</label>
+        <select id="bulk-format">
+          <option value="dialogue" selected>dialogue.md</option>
+          <option value="timestamped">timestamped.md</option>
+          <option value="plain">plain.md</option>
+        </select>
+      </span>
+
+      <button id="submit" class="single-only" disabled>Transcribe</button>
+      <button id="bulk-submit" class="bulk-only" disabled>Transcribe all</button>
+      <button id="bulk-download" class="secondary bulk-only" disabled>Download .zip</button>
     </div>
 
     {% if not diarization_available %}
@@ -203,6 +276,8 @@
       <div id="status" class="status"></div>
       <div id="progress-list" class="progress-list"></div>
     </div>
+
+    <div id="bulk-summary" class="bulk-summary"></div>
   </div>
 
   <div id="result" class="panel result">
@@ -221,11 +296,17 @@
       <button class="secondary" data-tab="dialogue">Dialogue</button>
     </div>
 
+    <div id="rename-panel" class="rename-panel">
+      <div class="title">Rename speakers (auto-updates dialogue tab)</div>
+      <div id="rename-grid" class="rename-grid"></div>
+    </div>
+
     <pre id="text"></pre>
     <div id="diar-warning" class="warn-banner" style="display:none"></div>
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 const drop = document.getElementById('drop');
 const fileInput = document.getElementById('file');
@@ -246,10 +327,13 @@ const preview = document.getElementById('preview');
 const thumb = document.getElementById('thumb');
 const previewName = document.getElementById('preview-name');
 const previewMeta = document.getElementById('preview-meta');
+const renamePanel = document.getElementById('rename-panel');
+const renameGrid = document.getElementById('rename-grid');
 
 let selectedFile = null;
 let lastResult = null;
 let activeTab = 'plain';
+let speakerNameMap = {};  // "Speaker 1" -> "Alice"
 
 drop.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => setFile(e.target.files[0]));
@@ -427,7 +511,10 @@ async function readStream(body) {
 
 function handleResult(data) {
   lastResult = data;
-  metaEl.textContent = `· ${data.model} · ${data.backend} · lang=${data.language || '?'} · ${data.segments.length} segments`;
+  speakerNameMap = {};  // reset on new transcription
+  const turns = data.dialogue_turns || [];
+  const speakerCount = new Set(turns.map(t => t.speaker)).size;
+  metaEl.textContent = `· ${data.model} · ${data.backend} · lang=${data.language || '?'} · ${data.segments.length} segments` + (speakerCount ? ` · ${speakerCount} speakers` : '');
 
   if (data.diarization_warning) {
     diarWarning.textContent = data.diarization_warning;
@@ -436,11 +523,71 @@ function handleResult(data) {
     diarWarning.style.display = 'none';
   }
 
+  buildRenameInputs(turns);
+
   // Default tab: dialogue if diarization succeeded, else plain.
   activeTab = data.diarization_used ? 'dialogue' : 'plain';
   syncTabButtons();
   renderTab();
   result.classList.add('show');
+}
+
+function buildRenameInputs(turns) {
+  renameGrid.innerHTML = '';
+  const speakers = [...new Set(turns.map(t => t.speaker))].sort((a, b) => {
+    const na = parseInt(a.replace(/\D/g, '')) || 0;
+    const nb = parseInt(b.replace(/\D/g, '')) || 0;
+    return na - nb;
+  });
+  if (!speakers.length) {
+    renamePanel.classList.remove('show');
+    return;
+  }
+  for (const sp of speakers) {
+    const row = document.createElement('div');
+    row.className = 'rename-row';
+    const lbl = document.createElement('label');
+    lbl.textContent = sp;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = `Custom name for ${sp}`;
+    inp.dataset.original = sp;
+    inp.addEventListener('input', () => {
+      const v = inp.value.trim();
+      if (v) speakerNameMap[sp] = v;
+      else delete speakerNameMap[sp];
+      if (activeTab === 'dialogue') renderTab();
+    });
+    row.appendChild(lbl);
+    row.appendChild(inp);
+    renameGrid.appendChild(row);
+  }
+  renamePanel.classList.add('show');
+}
+
+function displayName(rawSpeaker) {
+  return speakerNameMap[rawSpeaker] || rawSpeaker;
+}
+
+function fmtTimestamp(secs) {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const pad = (n, w) => n.toString().padStart(w, '0');
+  if (h) return `${pad(h, 2)}:${pad(m, 2)}:${s.toFixed(2).padStart(5, '0')}`;
+  return `${pad(m, 2)}:${s.toFixed(2).padStart(5, '0')}`;
+}
+
+function renderDialoguePlain(turns) {
+  return turns.map(t => `[${fmtTimestamp(t.start)}] ${displayName(t.speaker)}: "${t.text}"`).join('\n\n');
+}
+
+function renderDialogueMd(turns) {
+  const lines = ['# Dialogue Transcript\n'];
+  for (const t of turns) {
+    lines.push(`**${displayName(t.speaker)}** _\`${fmtTimestamp(t.start)}\`_:\n\n> ${t.text}\n`);
+  }
+  return lines.join('\n');
 }
 
 function syncTabButtons() {
@@ -459,8 +606,13 @@ document.querySelectorAll('.tabs button').forEach(btn => {
 
 function renderTab() {
   if (!lastResult) return;
-  if (activeTab === 'dialogue' && !lastResult.dialogue) {
-    textEl.textContent = '(Dialogue format requires speaker diarization. Enable the toggle and re-run.)';
+  if (activeTab === 'dialogue') {
+    const turns = lastResult.dialogue_turns || [];
+    if (!turns.length) {
+      textEl.textContent = '(Dialogue format requires speaker diarization. Enable the toggle and re-run.)';
+      return;
+    }
+    textEl.textContent = renderDialoguePlain(turns);
     return;
   }
   textEl.textContent = lastResult[activeTab] || '(empty)';
@@ -475,8 +627,19 @@ document.getElementById('download-md').addEventListener('click', () => downloadF
 
 function downloadFile(ext) {
   if (!lastResult) return;
-  const key = ext === 'md' ? `${activeTab}_md` : activeTab;
-  const content = lastResult[key];
+  let content;
+  // Dialogue uses client-side rendering so renamed speakers are reflected.
+  if (activeTab === 'dialogue') {
+    const turns = lastResult.dialogue_turns || [];
+    if (!turns.length) {
+      alert('No dialogue content (diarization not used).');
+      return;
+    }
+    content = ext === 'md' ? renderDialogueMd(turns) : renderDialoguePlain(turns);
+  } else {
+    const key = ext === 'md' ? `${activeTab}_md` : activeTab;
+    content = lastResult[key];
+  }
   if (!content) {
     alert(`No content for ${activeTab} (${ext}).`);
     return;
@@ -491,6 +654,244 @@ function downloadFile(ext) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ============================================================
+// Bulk mode
+// ============================================================
+const modeSingle = document.getElementById('mode-single');
+const modeBulk = document.getElementById('mode-bulk');
+const bulkDrop = document.getElementById('bulk-drop');
+const bulkFileInput = document.getElementById('bulk-file');
+const bulkList = document.getElementById('bulk-list');
+const bulkTbody = document.getElementById('bulk-tbody');
+const bulkSubmit = document.getElementById('bulk-submit');
+const bulkDownload = document.getElementById('bulk-download');
+const bulkFormat = document.getElementById('bulk-format');
+const bulkSummary = document.getElementById('bulk-summary');
+
+let bulkQueue = [];   // [{id, file, status, result, error}]
+let bulkRunning = false;
+
+modeSingle.addEventListener('click', () => setMode('single'));
+modeBulk.addEventListener('click', () => setMode('bulk'));
+
+function setMode(mode) {
+  document.body.classList.toggle('bulk-mode', mode === 'bulk');
+  modeSingle.classList.toggle('active', mode === 'single');
+  modeBulk.classList.toggle('active', mode === 'bulk');
+  // Clear progress/result on mode switch.
+  progressEl.classList.remove('show');
+  result.classList.remove('show');
+  bulkSummary.classList.remove('show');
+}
+
+bulkDrop.addEventListener('click', () => bulkFileInput.click());
+bulkFileInput.addEventListener('change', (e) => addBulkFiles(e.target.files));
+
+['dragenter', 'dragover'].forEach(ev => {
+  bulkDrop.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); bulkDrop.classList.add('drag'); });
+});
+['dragleave', 'drop'].forEach(ev => {
+  bulkDrop.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); bulkDrop.classList.remove('drag'); });
+});
+bulkDrop.addEventListener('drop', (e) => { if (e.dataTransfer.files.length) addBulkFiles(e.dataTransfer.files); });
+
+function addBulkFiles(fileList) {
+  for (const f of fileList) {
+    bulkQueue.push({
+      id: crypto.randomUUID(),
+      file: f,
+      status: 'queued',
+      result: null,
+      error: null,
+    });
+  }
+  renderBulkList();
+}
+
+function renderBulkList() {
+  if (!bulkQueue.length) {
+    bulkList.style.display = 'none';
+    bulkSubmit.disabled = true;
+    bulkDownload.disabled = true;
+    return;
+  }
+  bulkList.style.display = 'block';
+  bulkSubmit.disabled = bulkRunning || bulkQueue.every(q => q.status !== 'queued');
+  bulkDownload.disabled = !bulkQueue.some(q => q.status === 'done');
+
+  bulkTbody.innerHTML = '';
+  bulkQueue.forEach((item, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td class="name">${escapeHtml(item.file.name)}</td>
+      <td class="size">${(item.file.size / 1024 / 1024).toFixed(1)} MB</td>
+      <td class="status ${item.status}">${statusLabel(item)}</td>
+      <td>${item.status === 'queued' ? `<button class="remove-btn" data-id="${item.id}" title="Remove">×</button>` : ''}</td>
+    `;
+    bulkTbody.appendChild(tr);
+  });
+  bulkTbody.querySelectorAll('.remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      bulkQueue = bulkQueue.filter(q => q.id !== btn.dataset.id);
+      renderBulkList();
+    });
+  });
+}
+
+function statusLabel(item) {
+  if (item.status === 'queued') return 'queued';
+  if (item.status === 'processing') return '⏳ processing…';
+  if (item.status === 'done') {
+    const turns = item.result?.dialogue_turns || [];
+    const speakers = new Set(turns.map(t => t.speaker)).size;
+    return `✓ done${speakers ? ` (${speakers} speakers)` : ''}`;
+  }
+  if (item.status === 'error') return `✗ ${item.error || 'error'}`;
+  return item.status;
+}
+
+bulkSubmit.addEventListener('click', async () => {
+  if (bulkRunning) return;
+  bulkRunning = true;
+  bulkSummary.classList.remove('show');
+  progressEl.classList.add('show');
+  progressList.innerHTML = '';
+  status.className = 'status';
+
+  const total = bulkQueue.filter(q => q.status === 'queued').length;
+  let done = 0, failed = 0;
+
+  for (const item of bulkQueue) {
+    if (item.status !== 'queued') continue;
+    item.status = 'processing';
+    renderBulkList();
+    status.innerHTML = `<span class="spinner"></span>Processing ${++done}/${total}: ${escapeHtml(item.file.name)}`;
+    logEvent('bulk', `Starting ${item.file.name}`, 'active');
+
+    try {
+      const res = await transcribeOne(item.file);
+      item.result = res;
+      item.status = 'done';
+      logEvent('bulk', `Done: ${item.file.name}`, 'ok');
+    } catch (e) {
+      item.error = e.message;
+      item.status = 'error';
+      failed++;
+      logEvent('bulk', `Failed ${item.file.name}: ${e.message}`, 'err');
+    }
+    renderBulkList();
+  }
+
+  bulkRunning = false;
+  status.textContent = `Bulk complete. ${total - failed}/${total} succeeded.`;
+  bulkSummary.textContent = `${total - failed}/${total} files transcribed. Click "Download .zip" to save all.`;
+  bulkSummary.classList.add('show');
+  renderBulkList();
+});
+
+// Run /transcribe and resolve when result event arrives. Reuses existing endpoint.
+async function transcribeOne(file) {
+  const formData = new FormData();
+  formData.append('video', file);
+  formData.append('model', model.value);
+  formData.append('language', language.value);
+  formData.append('diarize', diarize.checked ? 'true' : 'false');
+  if (numSpeakers.value) formData.append('num_speakers', numSpeakers.value);
+
+  const res = await fetch('/transcribe', { method: 'POST', body: formData });
+  if (!res.ok && res.headers.get('content-type')?.includes('application/json')) {
+    const err = await res.json();
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  if (!res.body) throw new Error('No response body');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult = null;
+  let errorMsg = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let data;
+      try { data = JSON.parse(line); } catch { continue; }
+      if (data.event === 'progress') {
+        logEvent(data.stage, `[${file.name}] ${data.message}`);
+      } else if (data.event === 'result') {
+        finalResult = data;
+      } else if (data.event === 'error') {
+        errorMsg = data.error;
+      }
+    }
+  }
+  if (errorMsg) throw new Error(errorMsg);
+  if (!finalResult) throw new Error('Stream ended without result');
+  return finalResult;
+}
+
+// Build content for a single bulk item based on selected format.
+function bulkContentFor(item) {
+  const fmt = bulkFormat.value;  // 'dialogue' | 'timestamped' | 'plain'
+  const r = item.result;
+  if (!r) return null;
+  if (fmt === 'dialogue') {
+    const turns = r.dialogue_turns || [];
+    if (turns.length) return renderDialogueMd(turns);
+    // Fallback if diarization unavailable for this file.
+    return r.timestamped_md || r.plain_md;
+  }
+  if (fmt === 'timestamped') return r.timestamped_md;
+  return r.plain_md;
+}
+
+bulkDownload.addEventListener('click', async () => {
+  const successes = bulkQueue.filter(q => q.status === 'done');
+  if (!successes.length) return;
+  if (typeof JSZip === 'undefined') {
+    alert('JSZip not loaded.');
+    return;
+  }
+
+  const zip = new JSZip();
+  const fmt = bulkFormat.value;
+  const summaryLines = [`# Bulk Transcription Summary\n`, `Format: \`${fmt}.md\`\n`, `Total files: ${bulkQueue.length}\n`, ``];
+
+  for (const item of bulkQueue) {
+    const base = item.file.name.replace(/\.[^.]+$/, '');
+    if (item.status === 'done') {
+      const content = bulkContentFor(item);
+      if (content) {
+        zip.file(`${base}.${fmt}.md`, content);
+      }
+      summaryLines.push(`- ✓ \`${item.file.name}\` → \`${base}.${fmt}.md\``);
+    } else {
+      summaryLines.push(`- ✗ \`${item.file.name}\` — ${item.error || item.status}`);
+    }
+  }
+
+  zip.file('summary.md', summaryLines.join('\n') + '\n');
+
+  bulkDownload.disabled = true;
+  bulkDownload.textContent = 'Zipping…';
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.download = `transcripts-${fmt}-${stamp}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+  bulkDownload.textContent = 'Download .zip';
+  bulkDownload.disabled = false;
+});
 </script>
 </body>
 </html>

@@ -35,11 +35,20 @@ b. Accept terms on all gated models:
 - <https://huggingface.co/pyannote/segmentation-3.0>
 - <https://huggingface.co/pyannote/speaker-diarization-community-1>
 
-c. Export token before running:
+c. Provide token via `.env` file (preferred — persists across restarts):
+
+```bash
+cp .env.example .env
+# edit .env, paste token after HF_TOKEN=
+```
+
+Or export inline (one-shot):
 
 ```bash
 export HF_TOKEN=hf_xxx...
 ```
+
+`.env` is git-ignored. `python-dotenv` loads it on app start.
 
 Without `HF_TOKEN`, app still runs — dialogue tab shows a hint instead.
 
@@ -73,6 +82,17 @@ Whisper PyTorch fallback caches to `~/.cache/whisper`.
 - **Plain** — paragraph of transcript text.
 - **Timestamped** — `[mm:ss → mm:ss] text` per segment.
 - **Dialogue** — `Speaker 1: "..."` (requires diarization).
+
+## Bulk mode
+
+Top of UI has **Single | Bulk** switcher. Bulk mode:
+
+1. Drop or select multiple videos.
+2. Pick output format for ZIP (`dialogue.md` / `timestamped.md` / `plain.md`).
+3. Click **Transcribe all** — files process sequentially (avoids OOM at large-v3).
+4. Click **Download .zip** — bundles `<filename>.<format>.md` per file plus `summary.md`.
+
+Diarization toggle, model, language apply to all files. If diarization fails for a file in `dialogue` mode, it falls back to timestamped output for that file.
 
 ## Architecture
 

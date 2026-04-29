@@ -97,7 +97,7 @@ def _relabel(segments: List[dict]) -> List[dict]:
     return out
 
 
-def _build_turns(
+def build_turns(
     transcript_segments: List[dict],
     diarization_segments: List[dict],
 ) -> List[dict]:
@@ -137,7 +137,7 @@ def dialogue(
     if not diarization_segments:
         return ""
 
-    turns = _build_turns(transcript_segments, diarization_segments)
+    turns = build_turns(transcript_segments, diarization_segments)
     return "\n\n".join(
         f'[{format_timestamp(t["start"])}] {t["speaker"]}: "{t["text"]}"'
         for t in turns
@@ -151,7 +151,7 @@ def dialogue_md(
     if not diarization_segments:
         return ""
 
-    turns = _build_turns(transcript_segments, diarization_segments)
+    turns = build_turns(transcript_segments, diarization_segments)
     lines = ["# Dialogue Transcript\n"]
     for t in turns:
         ts = format_timestamp(t["start"])

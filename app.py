@@ -5,6 +5,11 @@ import tempfile
 import threading
 import time
 
+from dotenv import load_dotenv
+
+# Load .env before importing modules that read env vars (e.g. HF_TOKEN in diarizer).
+load_dotenv()
+
 from flask import Flask, Response, jsonify, render_template, request
 
 import diarizer
@@ -103,6 +108,12 @@ def transcribe_route():
                     post("progress", stage="diar_failed", message=diar_warning)
 
             post("progress", stage="formatting", message="Formatting output...")
+            # Build turns once for client-side rename / re-rendering.
+            turns = (
+                formatters.build_turns(segments, diar_segments)
+                if diar_segments
+                else []
+            )
             response = {
                 "language": result["language"],
                 "model": result["model"],
@@ -114,6 +125,7 @@ def transcribe_route():
                 "timestamped_md": formatters.timestamped_md(segments),
                 "dialogue_md": formatters.dialogue_md(segments, diar_segments),
                 "segments": segments,
+                "dialogue_turns": turns,
                 "diarization_used": diar_segments is not None,
                 "diarization_warning": diar_warning,
             }
