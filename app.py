@@ -4,6 +4,7 @@ import queue
 import tempfile
 import threading
 import time
+import uuid
 import warnings
 
 from dotenv import load_dotenv
@@ -17,9 +18,10 @@ load_dotenv()
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, url_for
 
 import diarizer
+import extractor
 import formatters
 import progress
 import transcriber
@@ -39,7 +41,166 @@ def index():
         models=AVAILABLE_MODELS,
         backend=transcriber.detect_backend(),
         diarization_available=diarizer.is_available(),
+        active_page="transcribe",
     )
+
+
+# ============================================================
+# Audio extraction (separate page)
+# ============================================================
+
+# Token → (output_path, download_filename, mime_type). Files removed after first
+# download or on next server restart (temp dir).
+_EXTRACT_RESULTS: "dict[str, tuple[str, str, str]]" = {}
+_EXTRACT_LOCK = threading.Lock()
+
+
+@app.route("/extract", methods=["GET"])
+def extract_index():
+    return render_template(
+        "extract.html",
+        active_page="extract",
+        ffmpeg_available=extractor.check_ffmpeg(),
+    )
+
+
+@app.route("/extract", methods=["POST"])
+def extract_action():
+    """Stream NDJSON progress while ffmpeg runs. Final event holds download token."""
+    if not extractor.check_ffmpeg():
+        return jsonify({"error": "ffmpeg/ffprobe not installed (brew install ffmpeg)"}), 500
+    if "video" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    uploaded = request.files["video"]
+    if not uploaded.filename:
+        return jsonify({"error": "Empty filename"}), 400
+
+    fmt = request.form.get("format", "mp3")
+    if fmt not in extractor.supported_formats():
+        return jsonify({"error": f"Unsupported format: {fmt}"}), 400
+    bitrate = request.form.get("bitrate") or None
+
+    info = extractor.format_info(fmt)
+    base = os.path.splitext(uploaded.filename)[0] or "audio"
+    out_ext = info["ext"]
+    download_filename = f"{base}.{out_ext}"
+
+    # Save upload to temp.
+    in_suffix = os.path.splitext(uploaded.filename)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=in_suffix) as tmp_in:
+        uploaded.save(tmp_in.name)
+        in_path = tmp_in.name
+
+    # Reserve output path.
+    out_fd, out_path = tempfile.mkstemp(suffix=f".{out_ext}", prefix="audio_extract_")
+    os.close(out_fd)
+
+    q: "queue.Queue[dict]" = queue.Queue()
+    SENTINEL = {"__done__": True}
+
+    def post(event_type: str, **fields):
+        q.put({"event": event_type, **fields})
+
+    def worker():
+        try:
+            t0 = time.time()
+            duration = extractor.get_duration(in_path)
+            post(
+                "progress",
+                stage="probed",
+                message=(
+                    f"Source duration: {duration:.1f}s. Extracting to {fmt}…"
+                    if duration > 0
+                    else "Source duration unknown. Extracting…"
+                ),
+                duration=duration,
+            )
+
+            def _on_pct(pct: int, current_sec: float, total_sec: float):
+                elapsed = f"{int(current_sec)}s"
+                if total_sec > 0:
+                    elapsed = f"{int(current_sec)}s / {int(total_sec)}s"
+                post(
+                    "progress",
+                    stage="extracting",
+                    message=f"Extracting: {pct}% ({elapsed})",
+                    percent=pct,
+                    elapsed=elapsed,
+                )
+
+            extractor.extract(in_path, out_path, fmt=fmt, bitrate=bitrate, on_progress=_on_pct)
+
+            elapsed_total = time.time() - t0
+            size = os.path.getsize(out_path)
+
+            token = uuid.uuid4().hex
+            with _EXTRACT_LOCK:
+                _EXTRACT_RESULTS[token] = (out_path, download_filename, info["mime"])
+
+            post("progress", stage="done", message=f"Done in {elapsed_total:.1f}s ({size/1024/1024:.1f} MB).", percent=100)
+            post(
+                "result",
+                download_url=url_for("extract_download", token=token),
+                filename=download_filename,
+                format=fmt,
+                size=size,
+            )
+
+        except Exception as e:
+            post("error", error=f"{type(e).__name__}: {e}")
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+        finally:
+            try:
+                os.remove(in_path)
+            except OSError:
+                pass
+            q.put(SENTINEL)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def stream():
+        while True:
+            event = q.get()
+            if event is SENTINEL:
+                return
+            yield json.dumps(event) + "\n"
+
+    return Response(stream(), mimetype="application/x-ndjson")
+
+
+@app.route("/extract/download/<token>", methods=["GET"])
+def extract_download(token):
+    """Serve extracted audio. File deleted after stream completes (single-use token)."""
+    with _EXTRACT_LOCK:
+        entry = _EXTRACT_RESULTS.pop(token, None)
+    if not entry:
+        return jsonify({"error": "Invalid or expired download token"}), 404
+
+    path, filename, mime = entry
+
+    def stream():
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(os.path.getsize(path)),
+    }
+    return Response(stream(), mimetype=mime, headers=headers)
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -203,5 +364,8 @@ if __name__ == "__main__":
     print(f"Backend: {backend} (mlx = Apple Silicon GPU; torch = CPU fallback)")
     print(f"Default model: {DEFAULT_MODEL}")
     print(f"Diarization: {'available' if diarizer.is_available() else 'unavailable (no HF_TOKEN or pyannote missing)'}")
+    print(f"Audio extraction: {'available' if extractor.check_ffmpeg() else 'unavailable (install ffmpeg)'}")
     print("Server: http://127.0.0.1:5000  (or http://localhost:5000)")
+    print("  /         → Transcribe")
+    print("  /extract  → Extract Audio")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

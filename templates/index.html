@@ -4,202 +4,22 @@
 <meta charset="utf-8" />
 <title>Video Transcriber</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 <style>
-  :root {
-    --bg: #0f1115;
-    --panel: #1a1d24;
-    --border: #2a2f3a;
-    --text: #e6e8ec;
-    --muted: #8b93a7;
-    --accent: #4f8cff;
-    --accent-hover: #3b78ee;
-    --error: #ff6b6b;
-    --warn: #f0b96b;
-    --ok: #6bd394;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    padding: 40px 20px;
-  }
-  .container { width: 100%; max-width: 880px; }
-  h1 { margin: 0 0 8px; font-size: 28px; }
-  .sub { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
-  .sub code { background: #0f1115; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px;
-    margin-bottom: 20px;
-  }
-  .drop {
-    border: 2px dashed var(--border);
-    border-radius: 10px;
-    padding: 40px 20px;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color .15s, background .15s;
-  }
-  .drop.drag { border-color: var(--accent); background: rgba(79,140,255,.08); }
-  .drop p { margin: 8px 0; }
-  .drop .hint { color: var(--muted); font-size: 13px; }
-  input[type=file] { display: none; }
-  .filename { margin-top: 12px; color: var(--muted); font-size: 13px; word-break: break-all; }
-
-  .preview { display: none; margin-top: 16px; align-items: center; gap: 16px; }
-  .preview.show { display: flex; }
-  .preview img { width: 200px; max-height: 120px; border-radius: 6px; border: 1px solid var(--border); object-fit: cover; }
-  .preview-info { font-size: 13px; color: var(--muted); flex: 1; min-width: 0; }
-  .preview-info .name { color: var(--text); word-break: break-all; }
-
-  .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
-  label { font-size: 13px; color: var(--muted); }
-  select, input[type=number] {
-    background: #0f1115; color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 8px 10px; font-size: 14px;
-  }
-  input[type=number] { width: 70px; }
-  .toggle { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
-  .toggle input { accent-color: var(--accent); }
-  button {
-    background: var(--accent); color: white; border: none; border-radius: 6px;
-    padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
-    transition: background .15s;
-  }
-  button:hover:not(:disabled) { background: var(--accent-hover); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
-  button.secondary:hover:not(:disabled) { background: var(--border); }
-  button.secondary.active { background: var(--accent); border-color: var(--accent); }
-
-  .progress { display: none; margin-top: 16px; }
-  .progress.show { display: block; }
-  .progress-list {
-    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
-    padding: 12px 14px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    max-height: 220px; overflow-y: auto;
-  }
-  .progress-list .ev { color: var(--muted); margin: 4px 0; line-height: 1.5; }
-  .progress-list .ev.active { color: var(--accent); }
-  .progress-list .ev.ok { color: var(--ok); }
-  .progress-list .ev.warn { color: var(--warn); }
-  .progress-list .ev.err { color: var(--error); }
-  .progress-list .ev .stage { display: inline-block; min-width: 110px; opacity: .7; }
-
-  .status { margin-top: 12px; font-size: 14px; color: var(--muted); }
-  .status.error { color: var(--error); }
-  .spinner {
-    display: inline-block; width: 14px; height: 14px;
-    border: 2px solid var(--muted); border-top-color: transparent;
-    border-radius: 50%; animation: spin .8s linear infinite;
-    vertical-align: -2px; margin-right: 8px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .result { display: none; }
-  .result.show { display: block; }
-  .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 12px; }
-  .result-header h2 { margin: 0; font-size: 18px; }
-  .meta { color: var(--muted); font-size: 13px; }
-  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
-  pre {
-    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
-    padding: 16px; margin: 0; max-height: 600px; overflow-y: auto;
-    white-space: pre-wrap; word-wrap: break-word; font-size: 14px; line-height: 1.6;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 999px;
-    background: #0f1115; border: 1px solid var(--border); font-size: 11px;
-    color: var(--muted); margin-left: 6px;
-  }
-  .warn-banner {
-    background: rgba(240,185,107,.08); border: 1px solid rgba(240,185,107,.3);
-    border-radius: 6px; padding: 10px 12px; font-size: 13px; color: var(--warn);
-    margin-top: 12px;
-  }
-  .rename-panel {
-    display: none; margin-bottom: 12px; padding: 12px;
-    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
-  }
-  .rename-panel.show { display: block; }
-  .rename-panel .title { font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .5px; }
-  .rename-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
-  .rename-row { display: flex; align-items: center; gap: 8px; }
-  .rename-row label { min-width: 80px; font-size: 13px; color: var(--muted); }
-  .rename-row input {
-    flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 10px; font-size: 13px;
-  }
-
-  /* Mode switcher */
-  .mode-switch { display: inline-flex; gap: 4px; padding: 4px; background: #0f1115; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; }
-  .mode-switch button { background: transparent; color: var(--muted); padding: 6px 14px; font-size: 13px; font-weight: 500; }
-  .mode-switch button.active { background: var(--accent); color: white; }
-  .mode-switch button:hover:not(.active) { color: var(--text); }
-
-  /* Bulk panel */
-  .bulk-only { display: none; }
-  body.bulk-mode .single-only { display: none; }
-  body.bulk-mode .bulk-only { display: block; }
-
-  .bulk-list { margin-top: 16px; max-height: 360px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: #0f1115; }
-  .bulk-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .bulk-list th, .bulk-list td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-  .bulk-list th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; position: sticky; top: 0; background: #0f1115; }
-  .bulk-list tr:last-child td { border-bottom: none; }
-  .bulk-list .name { word-break: break-all; }
-  .bulk-list .size { color: var(--muted); white-space: nowrap; }
-  .bulk-list .status { white-space: nowrap; }
-  .bulk-list .status.queued { color: var(--muted); }
-  .bulk-list .status.processing { color: var(--accent); }
-  .bulk-list .status.done { color: var(--ok); }
-  .bulk-list .status.error { color: var(--error); }
-  .bulk-list .remove-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 4px 8px; font-size: 16px; }
-  .bulk-list .remove-btn:hover { color: var(--error); }
-  .bulk-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
-
-  .bulk-summary { margin-top: 12px; padding: 12px; background: rgba(107,211,148,.08); border: 1px solid rgba(107,211,148,.3); border-radius: 8px; font-size: 13px; color: var(--ok); display: none; }
-  .bulk-summary.show { display: block; }
-
-  /* Progress bar */
-  .pbar {
-    position: relative; width: 100%; height: 14px; background: #0f1115;
-    border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
-  }
-  .pbar .fill {
-    position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
-    background: linear-gradient(90deg, var(--accent), #6bc1ff);
-    transition: width .15s ease;
-  }
-  .pbar .label {
-    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    font-size: 11px; color: var(--text); font-weight: 600; line-height: 1;
-    text-shadow: 0 0 4px rgba(0,0,0,.6);
-  }
-  .pbar.indet .fill {
-    width: 30%;
-    animation: pbar-indet 1.4s ease-in-out infinite;
-  }
-  @keyframes pbar-indet {
-    0% { left: -30%; }
-    100% { left: 100%; }
-  }
-  .bulk-list .pbar { width: 160px; }
-  .single-pbar { margin-top: 10px; display: none; }
-  .single-pbar.show { display: block; }
-  .single-pbar .stage-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  /* page-specific overrides (none currently) */
 </style>
 </head>
 <body>
+<nav class="topnav">
+  <div class="topnav-inner">
+    <a href="{{ url_for('index') }}" class="brand">Video Tools<span class="dot">.</span></a>
+    <div class="navlinks">
+      <a href="{{ url_for('index') }}" class="navlink {% if active_page == 'transcribe' %}active{% endif %}">Transcribe</a>
+      <a href="{{ url_for('extract_index') }}" class="navlink {% if active_page == 'extract' %}active{% endif %}">Extract Audio</a>
+    </div>
+  </div>
+</nav>
+<div class="page">
 <div class="container">
   <h1>Video Transcriber</h1>
   <div class="sub">
@@ -337,6 +157,7 @@
     <pre id="text"></pre>
     <div id="diar-warning" class="warn-banner" style="display:none"></div>
   </div>
+</div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>

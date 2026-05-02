@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Extract Audio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+<nav class="topnav">
+  <div class="topnav-inner">
+    <a href="{{ url_for('index') }}" class="brand">Video Tools<span class="dot">.</span></a>
+    <div class="navlinks">
+      <a href="{{ url_for('index') }}" class="navlink {% if active_page == 'transcribe' %}active{% endif %}">Transcribe</a>
+      <a href="{{ url_for('extract_index') }}" class="navlink {% if active_page == 'extract' %}active{% endif %}">Extract Audio</a>
+    </div>
+  </div>
+</nav>
+<div class="page">
+<div class="container">
+  <h1>Extract Audio</h1>
+  <div class="sub">
+    Strip audio track from any video using <code>ffmpeg</code>. Local processing — no upload to external servers.
+  </div>
+
+  <div class="panel">
+    <div id="drop" class="drop">
+      <p><strong>Click to select</strong> or drag a video here</p>
+      <p class="hint">MP4, MOV, MKV, WebM, AVI, etc. Audio-only files also work (re-encode).</p>
+      <div id="filename" class="filename"></div>
+    </div>
+    <input type="file" id="file" accept="video/*,audio/*" />
+
+    <div id="preview" class="preview">
+      <img id="thumb" alt="preview" />
+      <div class="preview-info">
+        <div id="preview-name" class="name"></div>
+        <div id="preview-meta"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <label for="format">Format:</label>
+      <select id="format">
+        <option value="mp3" selected>MP3</option>
+        <option value="m4a">M4A (AAC)</option>
+        <option value="wav">WAV (lossless)</option>
+        <option value="flac">FLAC (lossless)</option>
+        <option value="ogg">OGG (Vorbis)</option>
+        <option value="copy">Copy (no re-encode, fastest)</option>
+      </select>
+
+      <label for="bitrate" id="bitrate-label">Bitrate:</label>
+      <select id="bitrate">
+        <option value="96k">96 kbps</option>
+        <option value="128k">128 kbps</option>
+        <option value="192k" selected>192 kbps</option>
+        <option value="256k">256 kbps</option>
+        <option value="320k">320 kbps</option>
+      </select>
+
+      <button id="submit" disabled>Extract</button>
+    </div>
+
+    <div id="progress" class="progress">
+      <div id="status" class="status"></div>
+      <div id="single-pbar" class="single-pbar">
+        <div id="single-pbar-stage" class="stage-label"></div>
+        <div class="pbar"><div id="single-pbar-fill" class="fill"></div><div id="single-pbar-label" class="label">0%</div></div>
+      </div>
+      <div id="progress-list" class="progress-list"></div>
+    </div>
+
+    <div id="extract-result" class="extract-result">
+      <div class="info">
+        <div><strong>File:</strong> <span id="result-filename"></span></div>
+        <div><strong>Format:</strong> <span id="result-format"></span></div>
+        <div><strong>Size:</strong> <span id="result-size"></span></div>
+      </div>
+      <a id="download-link" class="download-btn" href="#" download>Download audio</a>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const filename = document.getElementById('filename');
+const submit = document.getElementById('submit');
+const status = document.getElementById('status');
+const progressEl = document.getElementById('progress');
+const progressList = document.getElementById('progress-list');
+const formatSel = document.getElementById('format');
+const bitrateSel = document.getElementById('bitrate');
+const bitrateLabel = document.getElementById('bitrate-label');
+const preview = document.getElementById('preview');
+const thumb = document.getElementById('thumb');
+const previewName = document.getElementById('preview-name');
+const previewMeta = document.getElementById('preview-meta');
+const singlePbar = document.getElementById('single-pbar');
+const singlePbarFill = document.getElementById('single-pbar-fill');
+const singlePbarLabel = document.getElementById('single-pbar-label');
+const singlePbarStage = document.getElementById('single-pbar-stage');
+const extractResult = document.getElementById('extract-result');
+const resultFilename = document.getElementById('result-filename');
+const resultFormat = document.getElementById('result-format');
+const resultSize = document.getElementById('result-size');
+const downloadLink = document.getElementById('download-link');
+
+let selectedFile = null;
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => setFile(e.target.files[0]));
+
+['dragenter', 'dragover'].forEach(ev => {
+  drop.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add('drag'); });
+});
+['dragleave', 'drop'].forEach(ev => {
+  drop.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('drag'); });
+});
+drop.addEventListener('drop', (e) => {
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+
+// Bitrate disabled for lossless / copy formats.
+formatSel.addEventListener('change', updateBitrateState);
+function updateBitrateState() {
+  const lossless = ['wav', 'flac', 'copy'].includes(formatSel.value);
+  bitrateSel.disabled = lossless;
+  bitrateLabel.style.opacity = lossless ? '0.4' : '1';
+}
+updateBitrateState();
+
+function setFile(file) {
+  if (!file) return;
+  selectedFile = file;
+  filename.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+  submit.disabled = false;
+  status.textContent = '';
+  status.className = 'status';
+  progressList.innerHTML = '';
+  progressEl.classList.remove('show');
+  singlePbar.classList.remove('show');
+  extractResult.classList.remove('show');
+  generateThumbnail(file);
+}
+
+function generateThumbnail(file) {
+  preview.classList.remove('show');
+  previewName.textContent = file.name;
+  previewMeta.textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB · ${file.type || 'unknown type'}`;
+
+  if (!file.type.startsWith('video/')) {
+    thumb.src = audioPlaceholder();
+    preview.classList.add('show');
+    return;
+  }
+
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.muted = true;
+  video.src = url;
+
+  video.addEventListener('loadedmetadata', () => {
+    video.currentTime = Math.min(1, video.duration * 0.1);
+    const dur = formatDuration(video.duration);
+    previewMeta.textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB · ${dur} · ${video.videoWidth}×${video.videoHeight}`;
+  });
+  video.addEventListener('seeked', () => {
+    const canvas = document.createElement('canvas');
+    const w = 320;
+    const h = (video.videoHeight / video.videoWidth) * w;
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    thumb.src = canvas.toDataURL('image/jpeg', 0.85);
+    preview.classList.add('show');
+    URL.revokeObjectURL(url);
+  });
+  video.addEventListener('error', () => {
+    thumb.src = audioPlaceholder();
+    preview.classList.add('show');
+    URL.revokeObjectURL(url);
+  });
+}
+
+function audioPlaceholder() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120"><rect width="200" height="120" fill="#0f1115"/><g stroke="#4f8cff" stroke-width="3" stroke-linecap="round"><line x1="40" y1="60" x2="40" y2="60"/><line x1="60" y1="40" x2="60" y2="80"/><line x1="80" y1="25" x2="80" y2="95"/><line x1="100" y1="35" x2="100" y2="85"/><line x1="120" y1="50" x2="120" y2="70"/><line x1="140" y1="30" x2="140" y2="90"/><line x1="160" y1="45" x2="160" y2="75"/></g></svg>`;
+  return 'data:image/svg+xml;base64,' + btoa(svg);
+}
+
+function formatDuration(secs) {
+  if (!isFinite(secs)) return '?:??';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function logEvent(stage, message, level) {
+  const div = document.createElement('div');
+  div.className = `ev ${level || ''}`;
+  div.innerHTML = `<span class="stage">[${stage}]</span> ${escapeHtml(message)}`;
+  progressList.appendChild(div);
+  progressList.scrollTop = progressList.scrollHeight;
+  return div;
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function resetPbar(label) {
+  singlePbarStage.textContent = label || '';
+  singlePbarFill.style.width = '0%';
+  singlePbarLabel.textContent = '0%';
+  singlePbar.querySelector('.pbar').classList.add('indet');
+}
+function setPbar(label, pct) {
+  singlePbar.querySelector('.pbar').classList.remove('indet');
+  if (label) singlePbarStage.textContent = label;
+  const p = Math.max(0, Math.min(100, pct));
+  singlePbarFill.style.width = p + '%';
+  singlePbarLabel.textContent = p + '%';
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+submit.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  submit.disabled = true;
+  extractResult.classList.remove('show');
+  progressEl.classList.add('show');
+  progressList.innerHTML = '';
+  status.className = 'status';
+  status.innerHTML = '<span class="spinner"></span>Uploading…';
+  resetPbar('Preparing…');
+  singlePbar.classList.add('show');
+
+  const formData = new FormData();
+  formData.append('video', selectedFile);
+  formData.append('format', formatSel.value);
+  if (!bitrateSel.disabled) formData.append('bitrate', bitrateSel.value);
+
+  try {
+    const res = await fetch('{{ url_for("extract_action") }}', { method: 'POST', body: formData });
+    if (!res.ok && res.headers.get('content-type')?.includes('application/json')) {
+      const err = await res.json();
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    if (!res.body) throw new Error('No response body');
+
+    status.innerHTML = '<span class="spinner"></span>Processing…';
+    await readStream(res.body);
+
+  } catch (err) {
+    status.textContent = `Error: ${err.message}`;
+    status.className = 'status error';
+    logEvent('error', err.message, 'err');
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+async function readStream(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let activeStage = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let data;
+      try { data = JSON.parse(line); } catch { continue; }
+
+      if (data.event === 'progress') {
+        if (activeStage) activeStage.classList.remove('active');
+        let level = '';
+        if (data.stage === 'done') level = 'ok';
+        activeStage = logEvent(data.stage, data.message, level || 'active');
+        if (typeof data.percent === 'number') {
+          setPbar(data.stage === 'extracting' ? `Extracting (${data.elapsed || ''})` : data.stage, data.percent);
+        }
+      } else if (data.event === 'result') {
+        if (activeStage) activeStage.classList.remove('active');
+        logEvent('done', `Ready: ${data.filename} (${fmtSize(data.size)})`, 'ok');
+        setPbar('done', 100);
+        showResult(data);
+        status.textContent = 'Done.';
+      } else if (data.event === 'error') {
+        if (activeStage) activeStage.classList.remove('active');
+        logEvent('error', data.error, 'err');
+        status.textContent = `Error: ${data.error}`;
+        status.className = 'status error';
+      }
+    }
+  }
+}
+
+function showResult(data) {
+  resultFilename.textContent = data.filename;
+  resultFormat.textContent = data.format;
+  resultSize.textContent = fmtSize(data.size);
+  downloadLink.href = data.download_url;
+  downloadLink.setAttribute('download', data.filename);
+  extractResult.classList.add('show');
+}
+</script>
+</body>
+</html>

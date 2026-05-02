@@ -94,14 +94,26 @@ Top of UI has **Single | Bulk** switcher. Bulk mode:
 
 Diarization toggle, model, language apply to all files. If diarization fails for a file in `dialogue` mode, it falls back to timestamped output for that file.
 
+## Pages
+
+Top header switches between two tools:
+
+- **Transcribe** (`/`) — Whisper transcription with optional diarization, single + bulk modes.
+- **Extract Audio** (`/extract`) — strip audio track from any video via ffmpeg. Formats: MP3, M4A, WAV, FLAC, OGG, or `copy` (no re-encode, fastest). Live progress bar during ffmpeg run, single-use download token (file deleted after download).
+
 ## Architecture
 
 ```
-app.py          Flask routes, request handling
-transcriber.py  MLX/Torch backend abstraction with fallback chain
+app.py          Flask routes (transcribe + extract + download)
+transcriber.py  MLX/Torch Whisper backend with fallback chain
 diarizer.py     pyannote.audio pipeline wrapper
 formatters.py   plain / timestamped / dialogue rendering + speaker alignment
-templates/index.html  upload UI with tabbed output
+extractor.py    ffmpeg subprocess wrapper for audio extraction
+progress.py     tqdm + pyannote progress capture for live percent streaming
+templates/
+  index.html    transcribe UI (single + bulk)
+  extract.html  audio extraction UI
+static/style.css  shared CSS for both pages
 ```
 
 ## Notes
