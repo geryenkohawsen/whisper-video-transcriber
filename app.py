@@ -21,6 +21,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import diarizer
 import formatters
+import progress
 import transcriber
 
 app = Flask(__name__)
@@ -91,22 +92,60 @@ def transcribe_route():
 
             post("progress", stage="loading_model", message=f"Loading {model_name} ({transcriber.detect_backend()})...")
             t0 = time.time()
-            result = transcriber.transcribe(tmp_path, model_name=model_name, language=language)
+
+            # Emit at most one event per integer percent change to avoid flooding the queue.
+            last_pct = [-1]
+            def _on_tqdm(current: int, total: int):
+                if not total:
+                    return
+                pct = int(current * 100 / total)
+                if pct == last_pct[0]:
+                    return
+                last_pct[0] = pct
+                post(
+                    "progress",
+                    stage="transcribing",
+                    message=f"Transcribing: {pct}% ({current}/{total} frames)",
+                    percent=pct,
+                    current=current,
+                    total=total,
+                )
+
+            with progress.capture_tqdm(_on_tqdm):
+                result = transcriber.transcribe(tmp_path, model_name=model_name, language=language)
             t_transcribe = time.time() - t0
-            post("progress", stage="transcribed", message=f"Transcription done in {t_transcribe:.1f}s ({len(result['segments'])} segments).")
+            post("progress", stage="transcribed", message=f"Transcription done in {t_transcribe:.1f}s ({len(result['segments'])} segments).", percent=100)
 
             segments = result["segments"]
             diar_segments = None
             diar_warning = None
 
             if enable_diarization:
-                post("progress", stage="diarizing", message="Running speaker diarization (this can take a while)...")
+                post("progress", stage="diarizing", message="Running speaker diarization (this can take a while)...", percent=0)
                 try:
                     t0 = time.time()
-                    diar_segments = diarizer.diarize(tmp_path, num_speakers=num_speakers)
+                    diar_last_pct = [-1]
+                    def _on_diar(current: int, total: int, step: str):
+                        if not total:
+                            return
+                        pct = int(current * 100 / total)
+                        if pct == diar_last_pct[0]:
+                            return
+                        diar_last_pct[0] = pct
+                        post(
+                            "progress",
+                            stage="diarizing",
+                            message=f"Diarization [{step}]: {pct}%",
+                            percent=pct,
+                            current=current,
+                            total=total,
+                            step=step,
+                        )
+                    diar_hook = progress.PyannoteHook(_on_diar)
+                    diar_segments = diarizer.diarize(tmp_path, num_speakers=num_speakers, hook=diar_hook)
                     t_diar = time.time() - t0
                     n_speakers = len({s["speaker"] for s in diar_segments})
-                    post("progress", stage="diarized", message=f"Diarization done in {t_diar:.1f}s ({n_speakers} speakers).")
+                    post("progress", stage="diarized", message=f"Diarization done in {t_diar:.1f}s ({n_speakers} speakers).", percent=100)
                 except diarizer.DiarizationUnavailable as e:
                     diar_warning = str(e)
                     post("progress", stage="diar_skipped", message=f"Diarization unavailable: {e}")

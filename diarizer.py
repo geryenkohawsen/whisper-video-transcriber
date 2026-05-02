@@ -69,16 +69,25 @@ def _load_pipeline():
         return _pipeline
 
 
-def diarize(audio_path: str, num_speakers: Optional[int] = None) -> List[dict]:
+def diarize(
+    audio_path: str,
+    num_speakers: Optional[int] = None,
+    hook=None,
+) -> List[dict]:
     """
     Returns list of {start, end, speaker} dicts sorted by start time.
     `speaker` is "SPEAKER_00", "SPEAKER_01", ... from pyannote.
+
+    `hook` (optional): pyannote-style progress hook. Pipeline calls it as
+    hook(step_name, step_artifact, file=..., total=..., completed=...).
     """
     pipeline = _load_pipeline()
 
     kwargs = {}
     if num_speakers:
         kwargs["num_speakers"] = num_speakers
+    if hook is not None:
+        kwargs["hook"] = hook
 
     diarization = pipeline(audio_path, **kwargs)
 

@@ -169,6 +169,34 @@
 
   .bulk-summary { margin-top: 12px; padding: 12px; background: rgba(107,211,148,.08); border: 1px solid rgba(107,211,148,.3); border-radius: 8px; font-size: 13px; color: var(--ok); display: none; }
   .bulk-summary.show { display: block; }
+
+  /* Progress bar */
+  .pbar {
+    position: relative; width: 100%; height: 14px; background: #0f1115;
+    border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
+  }
+  .pbar .fill {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+    background: linear-gradient(90deg, var(--accent), #6bc1ff);
+    transition: width .15s ease;
+  }
+  .pbar .label {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: var(--text); font-weight: 600; line-height: 1;
+    text-shadow: 0 0 4px rgba(0,0,0,.6);
+  }
+  .pbar.indet .fill {
+    width: 30%;
+    animation: pbar-indet 1.4s ease-in-out infinite;
+  }
+  @keyframes pbar-indet {
+    0% { left: -30%; }
+    100% { left: 100%; }
+  }
+  .bulk-list .pbar { width: 160px; }
+  .single-pbar { margin-top: 10px; display: none; }
+  .single-pbar.show { display: block; }
+  .single-pbar .stage-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -275,6 +303,10 @@
 
     <div id="progress" class="progress">
       <div id="status" class="status"></div>
+      <div id="single-pbar" class="single-pbar">
+        <div id="single-pbar-stage" class="stage-label"></div>
+        <div class="pbar"><div id="single-pbar-fill" class="fill"></div><div id="single-pbar-label" class="label">0%</div></div>
+      </div>
       <div id="progress-list" class="progress-list"></div>
     </div>
 
@@ -330,6 +362,10 @@ const previewName = document.getElementById('preview-name');
 const previewMeta = document.getElementById('preview-meta');
 const renamePanel = document.getElementById('rename-panel');
 const renameGrid = document.getElementById('rename-grid');
+const singlePbar = document.getElementById('single-pbar');
+const singlePbarFill = document.getElementById('single-pbar-fill');
+const singlePbarLabel = document.getElementById('single-pbar-label');
+const singlePbarStage = document.getElementById('single-pbar-stage');
 
 let selectedFile = null;
 let lastResult = null;
@@ -364,6 +400,7 @@ function setFile(file) {
   status.className = 'status';
   progressList.innerHTML = '';
   progressEl.classList.remove('show');
+  singlePbar.classList.remove('show');
   generateThumbnail(file);
 }
 
@@ -443,6 +480,8 @@ submit.addEventListener('click', async () => {
   progressList.innerHTML = '';
   status.className = 'status';
   status.innerHTML = '<span class="spinner"></span>Uploading...';
+  resetSinglePbar('Preparing…');
+  singlePbar.classList.add('show');
 
   const formData = new FormData();
   formData.append('video', selectedFile);
@@ -495,9 +534,11 @@ async function readStream(body) {
         if (data.stage === 'diar_failed' || data.stage === 'diar_skipped') level = 'warn';
         if (data.stage === 'transcribed' || data.stage === 'diarized') level = 'ok';
         activeStage = logEvent(data.stage, data.message, level || 'active');
+        updateSinglePbar(data);
       } else if (data.event === 'result') {
         if (activeStage) activeStage.classList.remove('active');
         logEvent('done', 'All processing finished.', 'ok');
+        setSinglePbar('done', 100);
         handleResult(data);
         status.textContent = 'Done.';
       } else if (data.event === 'error') {
@@ -657,6 +698,41 @@ function downloadFile(ext) {
 }
 
 // ============================================================
+// Progress bar helpers (single mode)
+// ============================================================
+function resetSinglePbar(stageLabel) {
+  singlePbarStage.textContent = stageLabel || '';
+  singlePbarFill.style.width = '0%';
+  singlePbarLabel.textContent = '0%';
+  singlePbar.querySelector('.pbar').classList.add('indet');  // indeterminate until first percent arrives
+}
+function setSinglePbar(stageLabel, pct) {
+  singlePbar.querySelector('.pbar').classList.remove('indet');
+  if (stageLabel) singlePbarStage.textContent = stageLabel;
+  const p = Math.max(0, Math.min(100, pct));
+  singlePbarFill.style.width = p + '%';
+  singlePbarLabel.textContent = p + '%';
+}
+// Map a backend progress event to the bar.
+function updateSinglePbar(ev) {
+  const stage = ev.stage;
+  if (stage === 'transcribing' && typeof ev.percent === 'number') {
+    setSinglePbar(`Transcribing (${ev.current}/${ev.total} frames)`, ev.percent);
+  } else if (stage === 'transcribed') {
+    setSinglePbar('Transcribed', 100);
+  } else if (stage === 'diarizing' && typeof ev.percent === 'number') {
+    const step = ev.step ? ` — ${ev.step}` : '';
+    setSinglePbar(`Diarizing${step}`, ev.percent);
+  } else if (stage === 'diarized') {
+    setSinglePbar('Diarized', 100);
+  } else if (stage === 'loading_model' || stage === 'upload') {
+    resetSinglePbar(ev.message || stage);
+  } else if (stage === 'formatting') {
+    setSinglePbar('Formatting', 100);
+  }
+}
+
+// ============================================================
 // Bulk mode
 // ============================================================
 const modeSingle = document.getElementById('mode-single');
@@ -708,6 +784,9 @@ function addBulkFiles(fileList) {
       status: 'queued',
       result: null,
       error: null,
+      pct: 0,
+      stage: '',
+      indet: true,  // bar shimmers until first numeric percent arrives
     });
   }
   renderBulkList();
@@ -729,11 +808,12 @@ function renderBulkList() {
   bulkTbody.innerHTML = '';
   bulkQueue.forEach((item, i) => {
     const tr = document.createElement('tr');
+    tr.dataset.id = item.id;
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td class="name">${escapeHtml(item.file.name)}</td>
       <td class="size">${(item.file.size / 1024 / 1024).toFixed(1)} MB</td>
-      <td class="status ${item.status}">${statusLabel(item)}</td>
+      <td class="status ${item.status}">${statusCell(item)}</td>
       <td>${item.status === 'queued' ? `<button class="remove-btn" data-id="${item.id}" title="Remove">×</button>` : ''}</td>
     `;
     bulkTbody.appendChild(tr);
@@ -744,6 +824,27 @@ function renderBulkList() {
       renderBulkList();
     });
   });
+}
+
+// Status cell: while processing, render a progress bar; else plain label.
+function statusCell(item) {
+  if (item.status === 'processing') {
+    const indet = item.indet ? ' indet' : '';
+    const pct = Math.max(0, Math.min(100, item.pct || 0));
+    const lbl = item.stage ? `${item.stage} ${pct}%` : `${pct}%`;
+    return `<div class="pbar${indet}"><div class="fill" style="width:${pct}%"></div><div class="label">${escapeHtml(lbl)}</div></div>`;
+  }
+  return statusLabel(item);
+}
+
+// Update bar in-place without rebuilding the whole table (avoid focus loss + flicker).
+function updateBulkRowBar(item) {
+  const tr = bulkTbody.querySelector(`tr[data-id="${item.id}"]`);
+  if (!tr) return;
+  const cell = tr.querySelector('td.status');
+  if (!cell) return;
+  cell.className = `status ${item.status}`;
+  cell.innerHTML = statusCell(item);
 }
 
 function statusLabel(item) {
@@ -787,7 +888,30 @@ bulkSubmit.addEventListener('click', async () => {
 
       try {
         bulkActiveController = new AbortController();
-        const res = await transcribeOne(item.file, bulkActiveController.signal);
+        item.pct = 0;
+        item.stage = 'starting';
+        item.indet = true;
+        const onProgress = (ev) => {
+          if (ev.stage === 'transcribing' && typeof ev.percent === 'number') {
+            item.indet = false;
+            item.pct = ev.percent;
+            item.stage = 'transcribing';
+          } else if (ev.stage === 'transcribed') {
+            item.pct = 100; item.stage = 'transcribed'; item.indet = false;
+          } else if (ev.stage === 'diarizing' && typeof ev.percent === 'number') {
+            item.indet = false;
+            item.pct = ev.percent;
+            item.stage = ev.step ? `diar:${ev.step}` : 'diarizing';
+          } else if (ev.stage === 'diarized') {
+            item.pct = 100; item.stage = 'diarized'; item.indet = false;
+          } else if (ev.stage === 'loading_model') {
+            item.indet = true; item.stage = 'loading model';
+          } else if (ev.stage === 'formatting') {
+            item.indet = true; item.stage = 'formatting';
+          }
+          updateBulkRowBar(item);
+        };
+        const res = await transcribeOne(item.file, bulkActiveController.signal, onProgress);
         item.result = res;
         item.status = 'done';
         logEvent('bulk', `Done: ${item.file.name}`, 'ok');
@@ -840,7 +964,8 @@ bulkAbort.addEventListener('click', () => {
 
 // Run /transcribe and resolve when result event arrives. Reuses existing endpoint.
 // `signal` (optional AbortSignal) lets caller cancel the in-flight request.
-async function transcribeOne(file, signal) {
+// `onProgress` (optional fn) called for every progress event (live percent updates).
+async function transcribeOne(file, signal, onProgress) {
   const formData = new FormData();
   formData.append('video', file);
   formData.append('model', model.value);
@@ -872,7 +997,12 @@ async function transcribeOne(file, signal) {
       let data;
       try { data = JSON.parse(line); } catch { continue; }
       if (data.event === 'progress') {
-        logEvent(data.stage, `[${file.name}] ${data.message}`);
+        // Avoid log spam: only write transcribing percent at every 10% step.
+        const isPctEvent = data.stage === 'transcribing' || data.stage === 'diarizing';
+        if (!isPctEvent || (typeof data.percent === 'number' && data.percent % 10 === 0)) {
+          logEvent(data.stage, `[${file.name}] ${data.message}`);
+        }
+        if (onProgress) onProgress(data);
       } else if (data.event === 'result') {
         finalResult = data;
       } else if (data.event === 'error') {
